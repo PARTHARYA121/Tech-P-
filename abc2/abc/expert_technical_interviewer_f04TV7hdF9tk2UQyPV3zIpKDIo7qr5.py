@@ -40,17 +40,21 @@ class ExpertTechnicalInterviewer:
 
             genai.configure(api_key=self.api_key)
             self.model = genai.GenerativeModel(model)
+            self.chat = self.model.start_chat(history=[])
             self.interview_state = "introduction"
             self.skill_questions_asked = 0
             self.latest_code_submission = None
             self.last_question = None
             self.just_repeated = False
+            self.cap = None
+            self.latest_code_submission = None
             self.current_domain = None
             self.conversation_history = []
             self.recognizer = sr.Recognizer()
             self.microphone = sr.Microphone()
             self.is_listening = False
             self.interrupted = False
+            self.camera_active = True
             self.recognizer.pause_threshold = 0.6
             self.recognizer.phrase_threshold = 0.2
             self.tone_warnings = 0
@@ -64,23 +68,28 @@ class ExpertTechnicalInterviewer:
             self.EYE_AR_CONSEC_FRAMES = 10  # Frames threshold for looking away
             self.gaze_counter = 0
             self.looking_away = False
-            
-            # Start monitoring threads (uncomment and modify)
+             # Start monitoring threads
+            self.monitoring_active = True
+            self.last_question = None
             self.face_monitor_thread = threading.Thread(target=self._monitor_face_and_gaze)
             self.face_monitor_thread.daemon = True
             self.face_monitor_thread.start()
+            
+            self.tab_monitor_thread = threading.Thread(target=self._monitor_tab_changes)
+            self.tab_monitor_thread.daemon = True
+            self.tab_monitor_thread.start()
             self.question_count = 0
             self.filler_phrases = [
                 "I see...", "Interesting...", "That makes sense...", 
                 "Go on...", "Yes, I understand...", "Right...",
                 "Okay...", "Hmm...", "Got it...", "Please continue..."
             ]
-            self.tab_monitor_ready = False
+            self.tab_monitor_thread = False
             self.last_face_detection_time = time.time()
             self.tab_change_detected = False
             self.response_delay = 0.3
             self.accent = accent.lower()
-            self.interview_active = True
+            self.interview_state = True
             self.coding_questions_asked = 0
             self.max_coding_questions = 2
             self.polly = boto3.client(
@@ -135,18 +144,6 @@ class ExpertTechnicalInterviewer:
             except pygame.error as e:
                 print(f"PyGame mixer initialization failed: {e}")
                 raise RuntimeError("Audio system initialization failed")
-                
-            # Start monitoring threads
-            self.monitoring_active = True
-            self.last_question = None
-            self.face_monitor_thread = threading.Thread(target=self._monitor_face_and_gaze)
-            self.face_monitor_thread.daemon = True
-            self.face_monitor_thread.start()
-            
-            self.tab_monitor_thread = threading.Thread(target=self._monitor_tab_changes)
-            self.tab_monitor_thread.daemon = True
-            self.tab_monitor_thread.start()
-
         except Exception as e:
             print(f"Initialization error: {e}")
             raise
@@ -161,7 +158,7 @@ class ExpertTechnicalInterviewer:
 
     def _monitor_face_and_gaze(self):
         """Enhanced face and gaze monitoring with MediaPipe"""
-        while self.monitoring_active and self.interview_active:
+        while self.monitoring_active and self.interview_state:
             if not self.camera_active or not self.cap:
                 time.sleep(0.2)
                 continue
@@ -248,7 +245,7 @@ class ExpertTechnicalInterviewer:
         """Adjust interview flow based on remaining time"""
         remaining = self._check_time_remaining()
         if remaining <= 0:
-            self.interview_active = False
+            self.interview_state = False
             return False
             
         # If we're running short on time, skip to next phase
@@ -536,17 +533,17 @@ class ExpertTechnicalInterviewer:
                 self._conduct_question_phase(is_tech_interview)
             
             # Coding Challenge Section (20 minutes, tech interviews only)
-            if is_tech_interview and self.interview_active:
+            if is_tech_interview and self.interview_state:
                 self._start_section("coding_challenge")
                 self._conduct_coding_challenge()
             
             # Doubt Clearing Section (10 minutes)
-            if self.interview_active:
+            if self.interview_state:
                 self._start_section("doubt_clearing")
                 self._conduct_doubt_clearing(is_tech_interview)
             
             # Closing Section (3 minutes)
-            if self.interview_active:
+            if self.interview_state:
                 self._start_section("closing")
                 self._conduct_closing(is_tech_interview)
                 
@@ -554,8 +551,8 @@ class ExpertTechnicalInterviewer:
             print(f"Interview error: {e}")
             self.speak("We've encountered a technical issue, but thank you for your participation today!", interruptible=False)
         finally:
-            self.interview_active = False
-            self.monitoring_active = False
+            self.interview_state = False
+            self.monitoring_active = True
             docx_path = self._save_transcription_to_docx()
             self._generate_feedback_from_docx(docx_path)
             self._stop_camera()
@@ -688,7 +685,7 @@ class ExpertTechnicalInterviewer:
         repeat_attempts = 0
         max_repeats = 2
 
-        while not answer_received and repeat_attempts < max_repeats and self.interview_active:
+        while not answer_received and repeat_attempts < max_repeats and self.interview_state:
             if not self.just_repeated:
                 self.speak(question)
                 self.wait_after_speaking(question)
@@ -782,7 +779,7 @@ class ExpertTechnicalInterviewer:
             self.speak("Let's discuss your professional experience in more detail.", interruptible=False)
 
         while (question_count < max_questions and 
-            self.interview_active and 
+            self.interview_state and 
             not self._should_transition_to_next_section("technical_questions")):
             
             if len(self.conversation_history) > 15:
@@ -890,7 +887,7 @@ class ExpertTechnicalInterviewer:
         time.sleep(0.2)
 
         while (self.coding_questions_asked < self.max_coding_questions and 
-               self.interview_active and 
+               self.interview_state and 
                self._check_time_remaining("coding_challenge") > 120):  # At least 2 minutes per question
             
             self.current_coding_question = self._generate_coding_question(self.current_domain or "python")
@@ -908,7 +905,7 @@ class ExpertTechnicalInterviewer:
             start_time = time.time()
 
             while (self._check_time_remaining("coding_challenge") > 60 and 
-                   self.interview_active):
+                   self.interview_state):
                 time.sleep(0.2)
                 
                 # Offer a hint after 2 minutes of inactivity
@@ -920,7 +917,7 @@ class ExpertTechnicalInterviewer:
                         self._give_small_hint(self.current_coding_question)
                     hint_offered = True
 
-            if not self.interview_active:
+            if not self.interview_state:
                 break
             time.sleep(0.2)
 
@@ -979,7 +976,7 @@ class ExpertTechnicalInterviewer:
         timeout = time.time() + min(self._check_time_remaining("doubt_clearing"), 10 * 60)  # Max 10 minutes
 
         while (questions_asked < max_questions and 
-               self.interview_active and 
+               self.interview_state and 
                time.time() < timeout):
             question = self.listen()
             if question and len(question.split()) > 3:
@@ -1052,7 +1049,7 @@ class ExpertTechnicalInterviewer:
             print(f"Camera restart failed: {e}")
 
     def _monitor_tab_changes(self):
-        while not self.tab_monitor_ready:
+        while not self.tab_monitor_thread:
             time.sleep(0.5)
         
         try:
@@ -1064,7 +1061,7 @@ class ExpertTechnicalInterviewer:
         
         warning_given = False
         
-        while self.monitoring_active and self.interview_active:
+        while self.monitoring_active and self.interview_state:
             try:
                 current_window = gw.getActiveWindow()
                 current_title = current_window.title if current_window else initial_title
@@ -1096,7 +1093,7 @@ class ExpertTechnicalInterviewer:
         
         if self.cheating_warnings >= 3:
             self.speak("Multiple concerning behaviors detected. The interview will now conclude.", interruptible=False)
-            self.interview_active = False
+            self.interview_state = False
             return
             
         responses = {
@@ -1111,8 +1108,8 @@ class ExpertTechnicalInterviewer:
 
     def __del__(self):
         """Clean up resources"""
-        self.interview_active = False
-        self.monitoring_active = False
+        self.interview_state = False
+        self.monitoring_active = True
         self._stop_camera()
         if hasattr(self, 'face_monitor_thread'):
             self.face_monitor_thread.join(timeout=1)
@@ -1430,7 +1427,7 @@ class ExpertTechnicalInterviewer:
         # Start tab monitoring
         def enable_tab_monitor():
             time.sleep(3)
-            self.tab_monitor_ready = True
+            self.tab_monitor_thread = True
 
         threading.Thread(target=enable_tab_monitor, daemon=True).start()
 
@@ -1440,7 +1437,7 @@ class ExpertTechnicalInterviewer:
         interview_thread.start()
 
         # Keep the main thread alive while interview is active
-        while self.interview_active:
+        while self.interview_state:
             time.sleep(0.2)
 
 class RAGExpertTechnicalInterviewer(ExpertTechnicalInterviewer):
